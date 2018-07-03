@@ -1,0 +1,899 @@
+---
+title: "Kinetic analysis of yeast-yeast interactions in oenological conditions"
+author: "thibault nidelet"
+date: "02/07/2018"
+output: html_document
+---
+
+# README
+
+Here you can find the script for all analysis and graphiqual representation of the article "Kinetic analysis of yeast-yeast interactions in oenological conditions"
+
+We used two dataset for our analysis :  
+
+* CO2.csv  
+* all_data.csv  
+
+The first dataset (**CO2.csv**) contain the evolution of CO2 production every 20mn up to 300h for each fermentation.
+The columns are :  
+
+* Blocs (the 5 different blocks of the experiment)  
+* Fermenter (the number of the fermenter of each fermentation. The same fermenters can be found in different blocks)  
+* Species (the species composition at t0 of each fermentation)  
+* Time (the time in hours)  
+* CO2 (the production of CO2 in g/L)  
+* CO2_rate (the rate of CO2 production in g/L/h)  
+
+
+The second dataset gives population and metabolites concentration for around 10 points across the fermentation. The columns are : 
+
+* Blocs (the 5 different blocks of the experiment)  
+* Fermenter (the number of the fermenter of each fermentation. The same fermenters can be found in different blocks)  
+* Species (the species composition at t0 of each fermentation)  
+* Time (the time in hours)  
+* CO2 (the production of CO2 in g/L)  
+* Pop_total (the total number of cells, alive or dead measure by cytometer in cells/mL)  
+* Prop_Sc (the proportion of the species S. cerevisiae, between 0 and 1)  
+* viability (the viability between 0 and 1)  
+* glucose (the concentration of glucose in g/L measured by HPLC)  
+* fructose (the concentration of fructose in g/L measured by HPLC)  
+* glycerol (the concentration of glycerol in g/L measured by HPLC)  
+* acetate (the concentration of acetate in g/L measured by HPLC)  
+* ethanol (the concentration of ethanol in g/L measured by HPLC)  
+* alpha (the concentration of alpha ketoglutarate in g/L measured by HPLC)  
+* succinate (the concentration of succinate in g/L measured by HPLC)  
+* pyruvate (the concentration of pyruvate in g/L measured by HPLC)  
+* Ammonium (the concentration of ammonium in mg/L measured by HPLC)  
+* Alanine (the concentration of alanine in mg/L measured by HPLC)  
+* Arginine (the concentration of arginine in mg/L measured by HPLC)  
+* Aspartate (the concentration of aspartate in mg/L measured by HPLC)  
+* Glutamine (the concentration of glutamine in mg/L measured by HPLC)  
+* Glutamate (the concentration of glutamate in mg/L measured by HPLC)  
+* Glycine (the concentration of glycine in mg/L measured by HPLC)  
+* Histidine (the concentration of histidine in mg/L measured by HPLC)  
+* Methionine (the concentration of methionine in mg/L measured by HPLC)  
+* Phenylalanine (the concentration of phenylalanine in mg/L measured by HPLC)  
+* Serine (the concentration of serine in mg/L measured by HPLC)  
+
+
+
+
+# Loading packages and Datasets
+```{r }
+library(tidyverse)
+library(ggthemes)
+library(grofit)
+library(stringr)
+library(gridExtra)
+library(Rmisc)
+library(agricolae)
+library(ggpubr)
+
+
+erreur.std <- function(x)
+{ x <- na.omit(x)
+ET <- sd(x)/sqrt(length(x))
+return(ET)
+}
+
+#loading the data of CO2
+myco2 <- read.csv("CO2.csv", sep = ";") %>% 
+    tbl_df() %>%
+    select(Blocs,Fermenter,Species,Time = Time..h.,CO2rate = CO2_rate..g.L.h.,CO2 = CO2..g.L.) %>%
+    filter(Time <= 300)
+
+knitr::kable(head(myco2))
+
+mypopulation <- read.csv("all_data.csv", sep = ";") %>%
+    tbl_df() %>%
+    filter(Time <= 300) %>%
+    select(Blocs,Fermenter,Species,Time, Pop_total,Prop_Sc,viability) %>%
+    mutate(PopV = Pop_total*viability) %>%
+    mutate(PopV.Sacc = PopV * Prop_Sc, PopV.NonSacc = PopV *(1-Prop_Sc))
+    
+mypopulation$Species <- factor(mypopulation$Species, levels = c( "Ho","Sc vs Ho", "Hu","Sc vs Hu", "Mf", "Sc vs Mf","Mp","Sc vs Mp","Td","Sc vs Td",  "Sc"))
+
+
+
+
+
+mydata.hplc <- read.csv("all_data.csv", sep = ";") %>%
+    tbl_df() %>%
+    filter(Time <= 300) %>%
+    select(-CO2,-Pop_total,-Prop_Sc,-viability,-Ammonium,-Alanine,-Arginine,-Aspartate,-Glutamine,-Glutamate,-Glycine,-Histidine,-Methionine,-Phenylalanine,-Serine,-Threonine,-Tryptophane,-Tyrosine,-Valine) %>% 
+    na.omit()
+
+mydata.aa <- read.csv("all_data.csv", sep = ";") %>%
+    tbl_df() %>%
+    filter(Time <= 300) %>%
+    select(-CO2,-Pop_total,-Prop_Sc,-viability) %>%
+    select(-glucose,-fructose,-glycerol,-acetate,-ethanol,-alpha,-succinate,-pyruvate) %>%
+    na.omit()
+
+
+mydata.aa$Species <- factor(mydata.aa$Species, levels = c( "Ho","Sc vs Ho", "Hu","Sc vs Hu", "Mf", "Sc vs Mf","Mp","Sc vs Mp","Td","Sc vs Td",  "Sc"))
+
+mydata.hplc$Species <- factor(mydata.hplc$Species, levels = c( "Ho","Sc vs Ho", "Hu","Sc vs Hu", "Mf", "Sc vs Mf","Mp","Sc vs Mp","Td","Sc vs Td",  "Sc"))
+
+```
+
+
+# CO2
+We first estimate for each fermentation the Vmax and the MaxCO2
+
+```{r }
+stock.para.CO2 <- NULL
+for(k in unique(myco2$Blocs)){
+    sub.data.1 <- myco2 %>% 
+        filter(Blocs == k)
+    for(i in unique(sub.data.1$Species)){
+        sub.data.2 <- sub.data.1 %>% filter(Species == i)
+        for(j in unique(sub.data.2$Fermenter)){
+            sub.data <- sub.data.2 %>% filter(Fermenter == j)
+            
+            Vmax <- max(sub.data$CO2rate)
+            tVmax <- sub.data$Time[max(which(sub.data$CO2rate == max(sub.data$CO2rate)))]
+            
+            maxCO2 <- max(sub.data$CO2)
+            latency.co2 <- max(sub.data$Time[sub.data$CO2 <= 1])
+            
+            stock.para.CO2 <- rbind.data.frame(stock.para.CO2,
+                                          data.frame(Bloc = k,
+                                                     Species = i,
+                                                     Fermenter = j,
+                                                     Vmax = Vmax, 
+                                                     MaxCO2 = maxCO2))
+            
+            
+            
+            
+        }
+        
+    }
+}
+```
+
+Then we can analyse the effect of the species on both parameters and plot the results
+
+## Vmax
+```{r}
+Vmax.aov <- aov(Vmax~Species,data = stock.para.CO2)
+Vmax.tukey <- HSD.test(Vmax.aov,"Species")
+
+anova(lm(MaxCO2~Species+Bloc,stock.para.CO2))
+
+means.Vmax <- Vmax.tukey$means %>%
+    select(Vmax,std) %>%
+    mutate(ymin = Vmax - std, ymax = Vmax + std)
+means.Vmax$Species <- row.names(Vmax.tukey$means)
+groups.Vmax <- Vmax.tukey$groups
+groups.Vmax$Species <- rownames(groups.Vmax)
+
+means.Vmax <- left_join(means.Vmax,groups.Vmax, by = "Species") %>%
+    select(Species,Vmax = Vmax.x, std, ymin, ymax, groups)
+    
+knitr::kable(means.Vmax, digits = 2)
+
+g.Vmax <- means.Vmax %>%
+    ggplot(aes(x = reorder(Species,Vmax), y = Vmax, ymin = ymin, ymax = ymax, label = groups)) +
+    geom_bar(stat = "identity") +
+    geom_text(col = "red",vjust = 0, hjust = 1) +
+    geom_errorbar() +
+    theme_tufte() +
+    labs(x = "", y = "Vmax (g/L/h)",title = "A)")
+```
+## MaxCO2
+```{r}
+MaxCO2.aov <- aov(MaxCO2~Species,data = stock.para.CO2)
+MaxCO2.tukey <- HSD.test(MaxCO2.aov,"Species")
+
+anova(lm(MaxCO2~Species+Bloc,stock.para.CO2))
+
+means.MaxCO2 <- MaxCO2.tukey$means %>%
+    select(MaxCO2,std) %>%
+    mutate(ymin = MaxCO2 - std, ymax = MaxCO2 + std)
+means.MaxCO2$Species <- row.names(MaxCO2.tukey$means)
+groups.MaxCO2 <- MaxCO2.tukey$groups
+groups.MaxCO2$Species <- rownames(groups.MaxCO2)
+
+means.MaxCO2 <- left_join(means.MaxCO2,groups.MaxCO2, by = "Species") %>%
+    select(Species,MaxCO2 = MaxCO2.x, std, ymin, ymax, groups)
+    
+knitr::kable(means.MaxCO2, digits = 2)
+
+g.MaxCO2 <- means.MaxCO2 %>%
+    ggplot(aes(x = reorder(Species,MaxCO2), y = MaxCO2, ymin = ymin, ymax = ymax, label = groups)) +
+    geom_bar(stat = "identity") +
+    geom_text(col = "red",vjust = 0, hjust = 1) +
+    geom_errorbar() +
+    theme_tufte()+
+    labs(x = "", y = "CO2max (g/L)",title = "B)")
+```
+## Graphics 
+```{r}
+grid.arrange(g.Vmax,g.MaxCO2,ncol = 2)
+```
+
+# Population
+
+```{r }
+stock.para.pop <- NULL
+par(mfrow = c(3,3))
+myerror <- NULL
+for(k in unique(mypopulation$Blocs)){
+    sub.data.1 <- mypopulation %>% filter(Blocs == k)
+    for(i in unique(sub.data.1$Species)){
+        sub.data.2 <- sub.data.1 %>% filter(Species == i)
+        for(j in unique(sub.data.2$Fermenter)){
+            sub.data <- sub.data.2 %>% filter(Fermenter == j)
+            
+            
+            mypropfinal <- last(sub.data$Prop_Sc)
+            myviability <- last(sub.data$viability)
+            
+            myfit <- gcFitModel(sub.data$Time, sub.data$Pop_total,control = grofit.control(suppress.messages = T))
+            
+            mymu <- myfit$parameters$mu[1]
+            myK = myfit$parameters$A[1]
+            mylatency = myfit$parameters$lambda[1]
+                
+            # plot(myfit$raw.time,myfit$raw.data,main=paste(k,i,j,sep="/"))
+            # if(length(myfit$fit.data) > 1){
+            #     lines(myfit$fit.time,myfit$fit.data,col=2)
+            # }else{
+            #     myerror <- rbind(myerror, c(i,j,k))
+            # }
+            
+            
+
+            
+            
+            stock.para.pop <- rbind.data.frame(stock.para.pop,
+                                          data.frame(Bloc = k,
+                                                     Species = i,
+                                                     Fermenter = j,
+                                                     mu = mymu, 
+                                                     K = myK, 
+                                                     latency = mylatency, 
+                                                     propfinal = mypropfinal,
+                                                     viability = myviability))
+        }
+        
+    }
+}
+```
+
+## mu
+```{r}
+mu.aov <- aov(mu~Species,data = stock.para.pop)
+mu.tukey <- HSD.test(mu.aov,"Species")
+
+anova(lm(mu~Species+Bloc,stock.para.pop))
+
+means.mu <- mu.tukey$means %>%
+    select(mu,std) %>%
+    mutate(ymin = mu - std, ymax = mu + std)
+means.mu$Species <- row.names(mu.tukey$means)
+groups.mu <- mu.tukey$groups
+groups.mu$Species <- rownames(groups.mu)
+
+means.mu <- left_join(means.mu,groups.mu, by = "Species") %>%
+    select(Species,mu = mu.x, std, ymin, ymax, groups)
+
+means.mu <- means.mu %>% 
+    mutate(mu.red = mu/1000000,std.red = std/1000000)
+    
+knitr::kable(means.mu, digits = 2)
+
+g.mu <- means.mu %>%
+    ggplot(aes(x = reorder(Species,mu), y = mu, ymin = ymin, ymax = ymax, label = groups)) +
+    geom_bar(stat = "identity") +
+    geom_text(col = "red",vjust = 0, hjust = 1) +
+    geom_errorbar() +
+    theme_tufte() +
+    labs(x = "", y = "mu (cells/mL/h)",title = "A)")
+```
+## K
+```{r}
+K.aov <- aov(K~Species,data = stock.para.pop)
+K.tukey <- HSD.test(K.aov,"Species")
+
+anova(lm(K~Species+Bloc,stock.para.pop))
+
+means.K <- K.tukey$means %>%
+    select(K,std) %>%
+    mutate(ymin = K - std, ymax = K + std)
+means.K$Species <- row.names(K.tukey$means)
+groups.K <- K.tukey$groups
+groups.K$Species <- rownames(groups.K)
+
+means.K <- left_join(means.K,groups.K, by = "Species") %>%
+    select(Species,K = K.x, std, ymin, ymax, groups)
+
+means.K <- means.K %>% 
+    mutate(K.red = K/100000000,std.red = std/100000000)
+    
+knitr::kable(means.K, digits = 2)
+
+g.K <- means.K %>%
+    ggplot(aes(x = reorder(Species,K), y = K, ymin = ymin, ymax = ymax, label = groups)) +
+    geom_bar(stat = "identity") +
+    geom_text(col = "red",vjust = 0, hjust = 1) +
+    geom_errorbar() +
+    theme_tufte() +
+    labs(x = "", y = "K (cells/mL)",title = "B)")
+```
+## Prop
+```{r}
+propfinal.aov <- aov(propfinal~Species,data = stock.para.pop %>% filter(grepl("vs",Species)))
+propfinal.tukey <- HSD.test(propfinal.aov,"Species")
+
+anova(lm(propfinal~Species,stock.para.pop%>% filter(grepl("vs",Species))))
+
+means.propfinal <- propfinal.tukey$means %>%
+    select(propfinal,std) %>%
+    mutate(ymin = propfinal - std, ymax = propfinal + std)
+means.propfinal$Species <- row.names(propfinal.tukey$means)
+groups.propfinal <- propfinal.tukey$groups
+groups.propfinal$Species <- rownames(groups.propfinal)
+
+means.propfinal <- left_join(means.propfinal,groups.propfinal, by = "Species") %>%
+    select(Species,propfinal = propfinal.x, std, ymin, ymax, groups)
+
+
+    
+knitr::kable(means.propfinal, digits = 2)
+
+g.propfinal <- means.propfinal %>%
+    ggplot(aes(x = reorder(Species,propfinal), y = propfinal, ymin = ymin, ymax = ymax, label = groups)) +
+    geom_bar(stat = "identity") +
+    geom_text(col = "red",vjust = 0, hjust = 1) +
+    geom_errorbar() +
+    theme_tufte() +
+    labs(x = "", y = "Sc final proportion",title = "C)")
+```
+## Viability
+```{r}
+viability.aov <- aov(viability~Species,data = stock.para.pop)
+viability.tukey <- HSD.test(viability.aov,"Species")
+
+anova(lm(viability~Species+Bloc,stock.para.pop))
+
+means.viability <- viability.tukey$means %>%
+    select(viability,std) %>%
+    mutate(ymin = viability - std, ymax = viability + std)
+means.viability$Species <- row.names(viability.tukey$means)
+groups.viability <- viability.tukey$groups
+groups.viability$Species <- rownames(groups.viability)
+
+means.viability <- left_join(means.viability,groups.viability, by = "Species") %>%
+    select(Species,viability = viability.x, std, ymin, ymax, groups)
+
+
+    
+knitr::kable(means.viability, digits = 2)
+
+g.viability <- means.viability %>%
+    ggplot(aes(x = reorder(Species,viability), y = viability, ymin = ymin, ymax = ymax, label = groups)) +
+    geom_bar(stat = "identity") +
+    geom_text(col = "red",vjust = 0, hjust = 1) +
+    geom_errorbar() +
+    theme_tufte() +
+    labs(x = "", y = "Final viability",title = "D)")
+```
+## Graphics 
+
+###Parameters
+```{r}
+grid.arrange(g.mu,g.K,g.propfinal,g.viability,ncol = 2)
+```
+
+### Dynamcis
+```{r}
+g.popvivante.td <- mypopulation %>%
+    filter(Blocs == "Sc vs Td") %>%
+    select(Species, Time,PopV) %>%
+    group_by(Time,Species) %>% 
+    dplyr::summarise(sdt = erreur.std(PopV),
+              PopV = mean(PopV)) %>%
+    mutate(ymin = PopV - sdt, ymax = PopV + sdt) %>%
+    ungroup() %>%
+    ggplot(aes(x = Time, y = PopV, color = Species, ymax = ymax, ymin = ymin)) +
+    geom_line() +
+    geom_pointrange() +
+    scale_y_continuous(limits=c(1,max(mypopulation$PopV)))+
+    scale_x_continuous(limits=c(0,max(mypopulation$Time)))+
+    scale_shape_manual(values=c(19,19,20))+
+    scale_color_manual(values = c("darkorchid1","darkorchid4","black")) +
+    scale_linetype_manual( values = c(1,3,1)) +
+    theme_tufte()+
+    theme(legend.position ="None") +
+    labs(x = "Time (h)", y = "Pop (cells/mL)")
+
+g.souspop.td <- mypopulation %>%
+    filter(Species == "Sc vs Td") %>%
+    select(Time,PopV,PopV.Sacc,PopV.NonSacc) %>%
+    gather(key = type, val = pop,-Time) %>%
+    group_by(Time,type) %>% 
+    dplyr::summarise(sdt = erreur.std(pop),
+              pop = mean(pop)) %>%
+    mutate(ymin = pop - sdt, ymax = pop + sdt) %>%
+    ungroup() %>%
+    ggplot(aes(x = Time, y = pop, color = type, ymax = ymax, ymin = ymin)) +
+    geom_line() +
+    geom_pointrange() +
+    scale_y_continuous(limits=c(1,max(mypopulation$PopV)))+
+    scale_x_continuous(limits=c(0,max(mypopulation$Time)))+
+    scale_shape_manual(values=c(19,19,20))+
+    scale_color_manual(values = c("darkorchid4","darkorchid1","black")) +
+    scale_linetype_manual(values = c(1,2,2)) +
+    theme_tufte()+
+    theme(legend.position ="None") +
+    labs(x = "Time (h)", y = "Pop (cells/mL)")
+
+
+g.popvivante.ho <- mypopulation %>%
+    filter(Blocs == "Sc vs Ho") %>%
+    select(Species, Time,PopV) %>%
+    group_by(Time,Species) %>% 
+    dplyr::summarise(sdt = erreur.std(PopV),
+              PopV = mean(PopV)) %>%
+    mutate(ymin = PopV - sdt, ymax = PopV + sdt) %>%
+    ungroup() %>%
+    ggplot(aes(x = Time, y = PopV, color = Species, ymax = ymax, ymin = ymin)) +
+    geom_line() +
+    geom_pointrange() +
+    scale_y_continuous(limits=c(1,max(mypopulation$PopV)))+
+    scale_x_continuous(limits=c(0,max(mypopulation$Time)))+
+    scale_shape_manual(values=c(19,19,20))+
+    scale_color_manual(values = c("darkorange1", "darkorange3","black")) +
+    scale_linetype_manual( values = c(1,3,1)) +
+    theme_tufte()+
+    theme(legend.position ="None") +
+    labs(x = "Time (h)", y = "Pop (cells/mL)")
+
+g.souspop.ho <- mypopulation %>%
+    filter(Species == "Sc vs Ho") %>%
+    select(Time,PopV,PopV.Sacc,PopV.NonSacc) %>%
+    gather(key = type, val = pop,-Time) %>%
+    group_by(Time,type) %>% 
+    dplyr::summarise(sdt = erreur.std(pop),
+              pop = mean(pop)) %>%
+    mutate(ymin = pop - sdt, ymax = pop + sdt) %>%
+    ungroup() %>%
+    ggplot(aes(x = Time, y = pop, color = type, ymax = ymax, ymin = ymin)) +
+    geom_line() +
+    geom_pointrange() +
+    scale_y_continuous(limits=c(1,max(mypopulation$PopV)))+
+    scale_x_continuous(limits=c(0,max(mypopulation$Time)))+
+    scale_shape_manual(values=c(19,19,20))+
+    scale_color_manual(values = c("darkorange3","darkorange1","black")) +
+    scale_linetype_manual(values = c(1,2,2)) +
+    theme_tufte()+
+    theme(legend.position ="None") +
+    labs(x = "Time (h)", y = "Pop (cells/mL)")
+
+g.popvivante.hu <- mypopulation %>%
+    filter(Blocs == "Sc vs Hu") %>%
+    select(Species, Time,PopV) %>%
+    group_by(Time,Species) %>% 
+    dplyr::summarise(sdt = erreur.std(PopV),
+              PopV = mean(PopV)) %>%
+    mutate(ymin = PopV - sdt, ymax = PopV + sdt) %>%
+    ungroup() %>%
+    ggplot(aes(x = Time, y = PopV, color = Species, ymax = ymax, ymin = ymin)) +
+    geom_line() +
+    geom_pointrange() +
+    scale_y_continuous(limits=c(1,max(mypopulation$PopV)))+
+    scale_x_continuous(limits=c(0,max(mypopulation$Time)))+
+    scale_shape_manual(values=c(19,19,20))+
+    scale_color_manual(values = c("red", "red3", "black")) +
+    scale_linetype_manual( values = c(1,3,1)) +
+    theme_tufte()+
+    theme(legend.position ="None") +
+    labs(x = "Time (h)", y = "Pop (cells/mL)")
+
+g.souspop.hu <- mypopulation %>%
+    filter(Species == "Sc vs Hu") %>%
+    select(Time,PopV,PopV.Sacc,PopV.NonSacc) %>%
+    gather(key = type, val = pop,-Time) %>%
+    group_by(Time,type) %>% 
+    dplyr::summarise(sdt = erreur.std(pop),
+              pop = mean(pop)) %>%
+    mutate(ymin = pop - sdt, ymax = pop + sdt) %>%
+    ungroup() %>%
+    ggplot(aes(x = Time, y = pop, color = type, ymax = ymax, ymin = ymin)) +
+    geom_line() +
+    geom_pointrange() +
+    scale_y_continuous(limits=c(1,max(mypopulation$PopV)))+
+    scale_x_continuous(limits=c(0,max(mypopulation$Time)))+
+    scale_shape_manual(values=c(19,19,20))+
+    scale_color_manual(values = c("red3","red","black")) +
+    scale_linetype_manual(values = c(1,2,2)) +
+    theme_tufte()+
+    theme(legend.position ="None") +
+    labs(x = "Time (h)", y = "Pop (cells/mL)")
+
+g.popvivante.mp <- mypopulation %>%
+    filter(Blocs == "Sc vs Mp") %>%
+    select(Species, Time,PopV) %>%
+    group_by(Time,Species) %>% 
+    dplyr::summarise(sdt = erreur.std(PopV),
+              PopV = mean(PopV)) %>%
+    mutate(ymin = PopV - sdt, ymax = PopV + sdt) %>%
+    ungroup() %>%
+    ggplot(aes(x = Time, y = PopV, color = Species, ymax = ymax, ymin = ymin)) +
+    geom_line() +
+    geom_pointrange() +
+    scale_y_continuous(limits=c(1,max(mypopulation$PopV)))+
+    scale_x_continuous(limits=c(0,max(mypopulation$Time)))+
+    scale_shape_manual(values=c(19,19,20))+
+    scale_color_manual(values = c("turquoise","turquoise4","black")) +
+    scale_linetype_manual( values = c(1,3,1)) +
+    theme_tufte()+
+    theme(legend.position ="None") +
+    labs(x = "Time (h)", y = "Pop (cells/mL)")
+
+g.souspop.mp <- mypopulation %>%
+    filter(Species == "Sc vs Mp") %>%
+    select(Time,PopV,PopV.Sacc,PopV.NonSacc) %>%
+    gather(key = type, val = pop,-Time) %>%
+    group_by(Time,type) %>% 
+    dplyr::summarise(sdt = erreur.std(pop),
+              pop = mean(pop)) %>%
+    mutate(ymin = pop - sdt, ymax = pop + sdt) %>%
+    ungroup() %>%
+    ggplot(aes(x = Time, y = pop, color = type, ymax = ymax, ymin = ymin)) +
+    geom_line() +
+    geom_pointrange() +
+    scale_y_continuous(limits=c(1,max(mypopulation$PopV)))+
+    scale_x_continuous(limits=c(0,max(mypopulation$Time)))+
+    scale_shape_manual(values=c(19,19,20))+
+    scale_color_manual(values = c("turquoise4","turquoise","black")) +
+    scale_linetype_manual(values = c(1,2,2)) +
+    theme_tufte()+
+    theme(legend.position ="None") +
+    labs(x = "Time (h)", y = "Pop (cells/mL)")
+
+
+g.popvivante.mf <- mypopulation %>%
+    filter(Blocs == "Sc vs Mf") %>%
+    select(Species, Time,PopV) %>%
+    group_by(Time,Species) %>% 
+    dplyr::summarise(sdt = erreur.std(PopV),
+              PopV = mean(PopV)) %>%
+    mutate(ymin = PopV - sdt, ymax = PopV + sdt) %>%
+    ungroup() %>%
+    ggplot(aes(x = Time, y = PopV, color = Species, ymax = ymax, ymin = ymin)) +
+    geom_line() +
+    geom_pointrange() +
+    scale_y_continuous(limits=c(1,max(mypopulation$PopV)))+
+    scale_x_continuous(limits=c(0,max(mypopulation$Time)))+
+    scale_shape_manual(values=c(19,19,20))+
+    scale_color_manual(values = c("green3","green4","black")) +
+    scale_linetype_manual( values = c(1,3,1)) +
+    theme_tufte()+
+    theme(legend.position ="None") +
+    labs(x = "Time (h)", y = "Pop (cells/mL)")
+
+g.souspop.mf <- mypopulation %>%
+    filter(Species == "Sc vs Mf") %>%
+    select(Time,PopV,PopV.Sacc,PopV.NonSacc) %>%
+    gather(key = type, val = pop,-Time) %>%
+    group_by(Time,type) %>% 
+    dplyr::summarise(sdt = erreur.std(pop),
+              pop = mean(pop)) %>%
+    mutate(ymin = pop - sdt, ymax = pop + sdt) %>%
+    ungroup() %>%
+    ggplot(aes(x = Time, y = pop, color = type, ymax = ymax, ymin = ymin)) +
+    geom_line() +
+    geom_pointrange() +
+    scale_y_continuous(limits=c(1,max(mypopulation$PopV)))+
+    scale_x_continuous(limits=c(0,max(mypopulation$Time)))+
+    scale_shape_manual(values=c(19,19,20))+
+    scale_color_manual(values = c("green4","green3","black")) +
+    scale_linetype_manual(values = c(1,2,2)) +
+    theme_tufte()+
+    theme(legend.position ="None") +
+    labs(x = "Time (h)", y = "Pop (cells/mL)")
+
+g.population <- grid.arrange(g.popvivante.td,g.souspop.td,
+             g.popvivante.ho,g.souspop.ho,
+             g.popvivante.hu,g.souspop.hu,
+             g.popvivante.mp,g.souspop.mp,
+             g.popvivante.mf,g.souspop.mf,
+             ncol=2)
+
+ggsave(g.population,file="population.png")
+```
+
+# Resources consumption
+## Sugar
+```{r}
+mydata.sugar <- NULL
+for(i in unique(mydata.hplc$Blocs)){
+    sub.data.1 <- mydata.hplc %>% filter(Blocs == i)
+    for(j in unique(sub.data.1$Fermenter)){
+        sub.data <- sub.data.1 %>% 
+            filter(Fermenter == j) %>%
+            filter(Time == max(Time))
+        
+        mydata.sugar <- rbind.data.frame(mydata.sugar, data.frame(Blocs = i,Fermenter = j, Species = sub.data$Species,glucose = sub.data$glucose, fructose = sub.data$fructose))
+    }
+}
+
+mydata.sugar$sugar <- mydata.sugar$glucose + mydata.sugar$fructose
+
+sugar.aov <- aov(sugar~Species,data = mydata.sugar)
+sugar.tukey <- HSD.test(sugar.aov,"Species")
+
+anova(lm(sugar~Species+Blocs,mydata.sugar))
+
+means.sugar <- sugar.tukey$means %>%
+    select(sugar,std) %>%
+    mutate(ymin = sugar - std, ymax = sugar + std)
+means.sugar$Species <- row.names(sugar.tukey$means)
+groups.sugar <- sugar.tukey$groups
+groups.sugar$Species <- rownames(groups.sugar)
+
+means.sugar <- left_join(means.sugar,groups.sugar, by = "Species") %>%
+    select(Species,sugar = sugar.x, std, ymin, ymax, groups)
+means.sugar$Species <- factor(means.sugar$Species, levels = c( "Ho","Sc vs Ho", "Hu","Sc vs Hu", "Mf", "Sc vs Mf","Mp","Sc vs Mp","Td","Sc vs Td",  "Sc"))
+
+    
+knitr::kable(means.sugar, digits = 2)
+
+g.sugar <- means.sugar %>%
+    ggplot(aes(x = Species, y = sugar, ymin = ymin, ymax = ymax, label = groups,fill = Species)) +
+    geom_bar(stat = "identity") +
+    geom_text(col = "red",vjust = 0, hjust = 1) +
+    geom_errorbar() +
+    scale_fill_manual(values = c("darkorange","darkorange3","red","red3","green3","green4","turquoise","turquoise3","darkorchid1","darkorchid4","black")) +
+    theme_tufte() +
+    labs(x = "", y = "Concentration (g/L)") +
+    theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5), legend.position='none')
+```
+
+## Total NAS
+
+```{r}
+mydata.aa$total <- apply(mydata.aa[,c("Ammonium","Alanine","Arginine","Aspartate","Glutamine","Glutamate","Glycine","Histidine","Methionine","Phenylalanine","Serine","Threonine","Tryptophane","Tyrosine","Valine")],1,sum)
+
+stock.cons.aa <- NULL
+for(i in unique(mydata.aa$Blocs)){
+    sub.data.1 <- mydata.aa %>% filter(Blocs == i)
+    for(j in unique(sub.data.1$Fermenter)){
+        sub.data.2 <- sub.data.1 %>% filter(Fermenter == j)
+        for(k in 5:ncol(sub.data.2)){
+            sub.data <- data.frame(sub.data.2$Time,sub.data.2[,k])
+            
+            delta.aa <- as.numeric(sub.data.2[1,k] - sub.data.2[2,k])
+            ratio.aa <- as.numeric(delta.aa/sub.data.2[1,k])
+         
+            stock.cons.aa <- rbind.data.frame(stock.cons.aa,
+                                              data.frame(Blocs = i,
+                                                         Species = sub.data.2$Species[1],
+                                                         AA = colnames(sub.data.2)[k],
+                                                         debut = as.numeric(sub.data.2[1,k]),
+                                                         fin = as.numeric(sub.data.2[2,k]),
+                                                         delta = delta.aa,
+                                                         ratio = ratio.aa))
+        }
+    }
+}
+
+
+left.NAS.aov <- aov(fin~Species,data = stock.cons.aa %>% filter(AA == "total"))
+left.NAS.tukey <- HSD.test(left.NAS.aov,"Species")
+
+anova(lm(fin~Species+Blocs,stock.cons.aa %>% filter(AA == "total")))
+
+means.left.NAS <- left.NAS.tukey$means %>%
+    select(fin,std) %>%
+    mutate(ymin = fin - std, ymax = fin + std)
+means.left.NAS$Species <- row.names(left.NAS.tukey$means)
+groups.left.NAS <- left.NAS.tukey$groups
+groups.left.NAS$Species <- rownames(groups.left.NAS)
+
+means.left.NAS <- left_join(means.left.NAS,groups.left.NAS, by = "Species") %>%
+    select(Species,NAS = fin.x, std, ymin, ymax, groups)
+means.left.NAS$Species <- factor(means.left.NAS$Species, levels = c( "Ho","Sc vs Ho", "Hu","Sc vs Hu", "Mf", "Sc vs Mf","Mp","Sc vs Mp","Td","Sc vs Td",  "Sc"))
+
+    
+knitr::kable(means.left.NAS, digits = 2)
+
+g.NAS <- means.left.NAS %>%
+    ggplot(aes(x = Species, y = NAS, ymin = ymin, ymax = ymax, label = groups,fill = Species)) +
+    geom_bar(stat = "identity") +
+    geom_text(col = "red",vjust = 0, hjust = 1) +
+    geom_errorbar() +
+    scale_fill_manual(values = c("darkorange","darkorange3","red","red3","green3","green4","turquoise","turquoise3","darkorchid1","darkorchid4","black")) +
+    theme_tufte() +
+    labs(x = "", y = "Concentration (mg/L)") +
+    theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5), legend.position='none')
+```
+## Ratio by AA
+```{r}
+
+AA.ratio <- stock.cons.aa %>%
+    group_by(Species,AA) %>%
+    dplyr::summarise(mean = mean(ratio))
+
+myorder.AA <- AA.ratio %>%
+    group_by(AA) %>%
+    dplyr::summarise(mean = mean(mean)) %>%
+    arrange(mean) %>%
+    select(AA) %>%
+    as.data.frame()
+myorder.AA <- as.character(myorder.AA[,1])
+
+myorder.Species <- AA.ratio %>%
+    group_by(Species) %>%
+    dplyr::summarise(mean = mean(mean)) %>%
+    arrange(mean) %>%
+    select(Species) %>%
+    as.data.frame()
+myorder.Species <- as.character(myorder.Species[,1])
+
+AA.ratio$AA <- factor(AA.ratio$AA, levels = myorder.AA)
+AA.ratio$Species <- factor(AA.ratio$Species, levels = myorder.Species)
+
+g.aa.ratio <- AA.ratio %>%
+    filter(AA != "total") %>%
+    ggplot(aes(x = Species,y = AA)) +
+    geom_tile(aes(fill = mean)) +
+    scale_fill_gradient2(low = "darkgreen",high = "red",na.value = "grey50",midpoint = 0.75) +
+    theme_tufte() +
+    labs(x="Species",y="Amino Acids",title="Consumption ratio of Nitrogen sources by Species") +
+    geom_text(aes(x=Species,y=AA,label=paste(round(mean*100),"%",sep="")),size = 3) +
+    theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5))
+```
+
+```{r}
+figure3 <- ggarrange(ggarrange(g.sugar, g.NAS, ncol = 2, labels = c("A", "B")),
+          g.aa.ratio,nrow = 2, labels = c("","C")) 
+
+figure3
+```
+
+#Production total HPLC 
+```{r}
+stock.prod <- NULL
+for(i in unique(mydata.hplc$Blocs)){
+    sub.data.1 <- mydata.hplc %>% filter(Blocs == i)
+    for(j in unique(sub.data.1$Fermenter)){
+        sub.data <- sub.data.1 %>% 
+            filter(Fermenter == j) %>%
+            filter(Time == max(Time)) %>%
+            mutate(sucre.cons = 200 - glucose - fructose) %>%
+            select(Blocs, Species, glycerol, acetate, ethanol, alpha, succinate, pyruvate, sucre.cons)
+        
+       stock.prod <- rbind.data.frame(stock.prod,sub.data) 
+    }
+}
+
+
+for(i in 3:8){
+    sub.data <- stock.prod %>%
+        select(c(Blocs = 1, Species = 2, metabolite = i))
+    
+    
+    metabolite.aov <- aov(metabolite~Species,data = sub.data)
+    metabolite.tukey <- HSD.test(metabolite.aov,"Species")
+
+    print(paste("############ ",colnames(stock.prod)[i]," ############"))
+    print(anova(lm(metabolite~Species+Blocs,sub.data)))
+
+    means.metabolite <- metabolite.tukey$means %>%
+        select(metabolite,std) %>%
+        mutate(ymin = metabolite - std, ymax = metabolite + std)
+    means.metabolite$Species <- row.names(metabolite.tukey$means)
+    groups.metabolite <- metabolite.tukey$groups
+    groups.metabolite$Species <- rownames(groups.metabolite)
+
+    means.metabolite <- left_join(means.metabolite,groups.metabolite, by = "Species") %>%
+        select(Species,metabolite = metabolite.x, std, ymin, ymax, groups)
+    means.metabolite$Species <- factor(means.metabolite$Species, levels = c( "Ho","Sc vs Ho", "Hu","Sc vs Hu", "Mf", "Sc vs Mf","Mp","Sc vs Mp","Td","Sc vs Td",  "Sc"))
+
+    
+    print(knitr::kable(means.metabolite, digits = 2))
+
+    g.metabolite <- means.metabolite %>%
+        ggplot(aes(x = reorder(Species,metabolite),, y = metabolite, ymin = ymin, ymax = ymax, label = groups,fill = Species)) +
+        geom_bar(stat = "identity") +
+        geom_text(col = "red",vjust = 0, hjust = 1) +
+        geom_errorbar() +
+        scale_fill_manual(values = c("darkorange","darkorange3","red","red3","green3","green4","turquoise","turquoise3","darkorchid1","darkorchid4","black")) +
+        theme_tufte() +
+        labs(x = "", y = "Concentration (mg/L)", title = colnames(stock.prod)[i]) +
+        theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5), legend.position='none')
+    print(g.metabolite)
+        
+}
+
+
+```
+
+# Yield relative to S. cerevisiae Yield
+```{r}
+myyield <- stock.prod %>%
+    mutate(Glycerol = glycerol/sucre.cons,
+           Acetate = acetate/sucre.cons,
+           Ethanol = ethanol/sucre.cons,
+           Alpha_ketoglutarate = alpha/sucre.cons,
+           Succinate = succinate/sucre.cons,
+           Pyruvate = pyruvate/sucre.cons) %>%
+    select(Blocs, Species,Glycerol,Acetate,Ethanol,Alpha_ketoglutarate,Succinate,Pyruvate)
+
+
+tabgather <- myyield  %>%
+    gather(key = parametres, val = value,-Species,-Blocs)
+
+
+mean.Sc <- tabgather %>% 
+    filter(Species == "Sc") %>%
+    group_by(parametres) %>%
+    dplyr::summarise(mean = mean(value))
+
+tabgather$value.r <- 0
+for(i in 1:nrow(tabgather)){
+    tabgather$value.r[i] <- (tabgather$value[i]-mean.Sc$mean[mean.Sc$parametres == tabgather$parametres[i]])/mean.Sc$mean[mean.Sc$parametres == tabgather$parametres[i]]
+    
+}
+
+tabgather %>%
+    group_by(Species,parametres) %>%
+    dplyr::summarise(mean=mean(value.r),sdt = erreur.std(value.r)) %>%
+    mutate(ymin = mean - sdt, ymax = mean + sdt) %>%
+    ggplot(aes(x = Species, y = mean, ymin = ymin, ymax = ymax, fill = Species)) +
+    geom_bar(stat="identity") +
+    geom_errorbar() +
+    scale_fill_manual(values = c("darkorange","darkorange3","red","red3","green3","green4","turquoise","turquoise3","darkorchid1","darkorchid4","black")) +
+    facet_wrap(~parametres,scales = "free_y") +
+    theme_tufte() +
+    theme(axis.text.x = element_text(angle = 90,hjust = 1, vjust = 0.5)) +
+    labs(x = "", y = "relative yield to S. cerevisiae yield")
+
+
+
+
+```
+```{r}
+for(i in unique(tabgather$parametres)){
+    sub.data <- tabgather %>%
+        filter(parametres == i)
+    
+    
+    relative.yield.aov <- aov(value.r~Species,data = sub.data)
+    relative.yield.tukey <- HSD.test(relative.yield.aov,"Species")
+
+    print(paste("############ ",colnames(stock.prod)[i]," ############"))
+    print(anova(lm(value.r~Species+Blocs,sub.data)))
+
+    means.relative.yield <- relative.yield.tukey$means %>%
+        select(value.r,std) %>%
+        mutate(ymin = value.r - std, ymax = value.r + std)
+    means.relative.yield$Species <- row.names(relative.yield.tukey$means)
+    groups.relative.yield <- relative.yield.tukey$groups
+    groups.relative.yield$Species <- rownames(groups.relative.yield)
+
+    means.relative.yield <- left_join(means.relative.yield,groups.relative.yield, by = "Species") %>%
+        select(Species,value.r = value.r.x, std, ymin, ymax, groups)
+    means.relative.yield$Species <- factor(means.relative.yield$Species, levels = c( "Ho","Sc vs Ho", "Hu","Sc vs Hu", "Mf", "Sc vs Mf","Mp","Sc vs Mp","Td","Sc vs Td",  "Sc"))
+
+    
+    print(knitr::kable(means.relative.yield, digits = 2))
+
+    g.relative.yield <- means.relative.yield %>%
+        ggplot(aes(x = reorder(Species,value.r), y = value.r, ymin = ymin, ymax = ymax, label = groups,fill = Species)) +
+        geom_bar(stat = "identity") +
+        geom_text(col = "red",vjust = 0, hjust = 1) +
+        geom_errorbar() +
+        scale_fill_manual(values = c("darkorange","darkorange3","red","red3","green3","green4","turquoise","turquoise3","darkorchid1","darkorchid4","black")) +
+        theme_tufte() +
+        labs(x = "", y = "relative yield to Sc yield", title = i) +
+        theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5), legend.position='none')
+    print(g.relative.yield)
+}
+```
+
